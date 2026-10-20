@@ -98,6 +98,34 @@ def force_target_language(payload):
     ] + msgs
 
 
+def _assemble_sse_text(raw):
+    """Concatenate delta content out of a raw upstream SSE byte stream."""
+    parts = []
+    for line in raw.decode("utf-8", "replace").split("\n"):
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            continue
+        try:
+            obj = json.loads(data)
+            delta = obj["choices"][0]["delta"].get("content") or ""
+        except Exception:
+            continue
+        if delta:
+            parts.append(delta)
+    return "".join(parts)
+
+
+def log_translation_out(text, mode):
+    """Log what a translation returned (length + first 300 chars, JSON-escaped
+    to stay on one line) so output language/quality is auditable in
+    proxy_requests.log alongside the IN lines."""
+    debug_log(f"OUT chat mode={mode} chars={len(text)} "
+              f"text={json.dumps(text[:300], ensure_ascii=False)}")
+
+
 def debug_log(msg):
     """Append a debug line, rotating the log when it grows past ~1 MB so a
     long-running proxy never lets the log file grow without bound on disk."""
@@ -460,12 +488,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "close")
                 self.end_headers()
+                raw = bytearray()
                 while True:
                     chunk = resp.read1(8192)
                     if not chunk:
                         break
+                    raw.extend(chunk)
                     self.wfile.write(chunk)
                     self.wfile.flush()
+                log_translation_out(_assemble_sse_text(bytes(raw)), "stream")
                 return
 
             # Non-streaming client: assemble SSE deltas into one JSON.
@@ -497,6 +528,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     if delta:
                         parts.append(delta)
             text = "".join(parts)
+            log_translation_out(text, "assembled")
             out = {
                 "id": meta.get("id", "chatcmpl-proxy"),
                 "object": "chat.completion",
