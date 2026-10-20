@@ -11,6 +11,11 @@ Why this exists (the gotchas it hides):
     Without it the model emits a Chain-of-Thought block instead of the
     translation, which breaks any client expecting clean text.
   * It defaults ``temperature`` to 0 (greedy decoding) for stable output.
+  * It defaults the translation target to Simplified Chinese by prepending
+    a system instruction to every request (clients rarely pin a target
+    language, and the upstream otherwise answers in English — including
+    English refusal text that pollutes the caller's data). Override with
+    env ``INDEX_TRANSLATE_TARGET_LANG`` (e.g. "English"); "off" disables.
   * No API key is required upstream; any client-supplied key is accepted.
   * Egress is adaptive: DIRECT first, then the system proxy (HTTPS_PROXY).
     This works whether or not your local proxy (Clash/v2ray) is running, and
@@ -55,6 +60,42 @@ AVAILABLE_MODELS = [
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEBUG_LOG = os.path.join(HERE, "proxy_requests.log")
+
+# Default translation target language. Read per request so it can be
+# changed via the environment without editing code; "off" disables the
+# injection entirely (pure pass-through, upstream behavior).
+DEFAULT_TARGET_LANG = "Simplified Chinese"
+
+LANG_INSTRUCTION = (
+    "You are a professional translation engine. Translate the text given by "
+    "the user into {lang} and output ONLY the translation: no explanations, "
+    "no comments, no extra text. Translate faithfully and completely. If "
+    "the text is already in {lang}, return it unchanged. Only when the "
+    "user's instructions explicitly name a different target language, "
+    "translate into that language instead."
+)
+
+
+def force_target_language(payload):
+    """Prepend a system instruction pinning the translation target language
+    (Simplified Chinese by default). Clients like scrapers and reader
+    plugins often send a bare "translate this" prompt with no target
+    language; without this the upstream model answers in English."""
+    lang = os.environ.get("INDEX_TRANSLATE_TARGET_LANG",
+                          DEFAULT_TARGET_LANG).strip()
+    if not lang or lang.lower() == "off":
+        return
+    msgs = payload.get("messages")
+    if not isinstance(msgs, list) or not msgs:
+        return
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "system" and \
+                isinstance(m.get("content"), str) and \
+                "professional translation engine" in m["content"]:
+            return  # already injected (e.g. chained proxies)
+    payload["messages"] = [
+        {"role": "system", "content": LANG_INSTRUCTION.format(lang=lang)}
+    ] + msgs
 
 
 def debug_log(msg):
@@ -325,6 +366,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         payload["chat_template_kwargs"]["enable_thinking"] = False
         if payload.get("temperature") is None:
             payload["temperature"] = 0.0
+        force_target_language(payload)
 
         body = json.dumps(payload).encode("utf-8")
         upstream_url = f"{self.api_base.rstrip('/')}{upstream_path}"
@@ -381,6 +423,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         payload["chat_template_kwargs"]["enable_thinking"] = False
         if payload.get("temperature") is None:
             payload["temperature"] = 0.0
+        force_target_language(payload)
         client_wants_stream = bool(payload.get("stream"))
         payload["stream"] = True  # force upstream streaming
 
@@ -510,6 +553,9 @@ def run_serve(args):
     print(f" Local endpoint : http://{display_host}:{args.port}/v1")
     print(f" Upstream API   : {args.api_base}")
     print(f" Default model  : {args.model}")
+    print(f" Target language: "
+          f"{os.environ.get('INDEX_TRANSLATE_TARGET_LANG', DEFAULT_TARGET_LANG)} "
+          f"(env INDEX_TRANSLATE_TARGET_LANG, 'off' = pass-through)")
     print(" 陪读蛙 / Immersive Translate configuration:")
     print(f"   API URL : http://{display_host}:{args.port}/v1")
     print(f"   Model   : {args.model}")
