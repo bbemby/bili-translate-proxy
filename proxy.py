@@ -77,10 +77,18 @@ LANG_INSTRUCTION = (
 
 
 def force_target_language(payload):
-    """Prepend a system instruction pinning the translation target language
-    (Simplified Chinese by default). Clients like scrapers and reader
-    plugins often send a bare "translate this" prompt with no target
-    language; without this the upstream model answers in English."""
+    """Pin the translation target language (Simplified Chinese by default).
+
+    Clients like scrapers and reader plugins often send a bare
+    "translate this" prompt with no target language; without this the
+    upstream model answers in English.
+
+    If the client already sends a system message, merge the instruction
+    into it instead of prepending a second one: the upstream API
+    rejects requests with more than one system message (400 "System
+    message must be at the beginning", surfacing as an empty result
+    for non-streaming clients).
+    """
     lang = os.environ.get("INDEX_TRANSLATE_TARGET_LANG",
                           DEFAULT_TARGET_LANG).strip()
     if not lang or lang.lower() == "off":
@@ -93,8 +101,17 @@ def force_target_language(payload):
                 isinstance(m.get("content"), str) and \
                 "professional translation engine" in m["content"]:
             return  # already injected (e.g. chained proxies)
+    instruction = LANG_INSTRUCTION.format(lang=lang)
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "system":
+            if isinstance(m.get("content"), str):
+                m["content"] = instruction + "\n\n" + m["content"]
+            elif isinstance(m.get("content"), list):
+                m["content"] = [{"type": "text", "text": instruction}] + \
+                    m["content"]
+            return
     payload["messages"] = [
-        {"role": "system", "content": LANG_INSTRUCTION.format(lang=lang)}
+        {"role": "system", "content": instruction}
     ] + msgs
 
 
