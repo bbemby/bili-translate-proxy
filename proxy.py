@@ -405,7 +405,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "no messages/input provided"}).encode("utf-8"))
             return
 
-        payload["model"] = payload.get("model") or self.default_model
+        if payload.get("model") not in AVAILABLE_MODELS:
+            debug_log(f"MODEL FALLBACK unknown model={payload.get('model')!r} -> {self.default_model}")
+            payload["model"] = self.default_model
         if not isinstance(payload.get("chat_template_kwargs"), dict):
             payload["chat_template_kwargs"] = {}
         payload["chat_template_kwargs"]["enable_thinking"] = False
@@ -462,7 +464,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         upstream (avoids the free gateway's ~10s-silence 504), and either
         passes the SSE stream through or assembles it back into a standard
         non-streaming response depending on what the client asked for."""
-        payload["model"] = payload.get("model") or self.default_model
+        if payload.get("model") not in AVAILABLE_MODELS:
+            debug_log(f"MODEL FALLBACK unknown model={payload.get('model')!r} -> {self.default_model}")
+            payload["model"] = self.default_model
         if not isinstance(payload.get("chat_template_kwargs"), dict):
             payload["chat_template_kwargs"] = {}
         payload["chat_template_kwargs"]["enable_thinking"] = False
